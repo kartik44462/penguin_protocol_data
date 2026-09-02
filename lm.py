@@ -90,6 +90,7 @@ def generate_station_reading(station_id="MAITRI"):
         battery_level = float(np.clip(85.0 + (solar_kw * 0.4), 85.0, 100.0))
     else:
         # Nighttime or blizzard drain on battery backup
+        solar_kw=0.0
         battery_level = float(np.clip(100.0 - (generator_load * 0.3), 15.0, 90.0))
 
     # --- G. FUEL CONSUMPTION SYNTHESIS ---
@@ -99,28 +100,28 @@ def generate_station_reading(station_id="MAITRI"):
     CURRENT_FUEL = max(0.0, CURRENT_FUEL - fuel_used_this_interval)
 
     # --- H. ANOMALY & DISASTER LABELING (FOR ML EVALUATION) ---
-    occurring_anomaly = "NONE"
-    predicted_anomaly = "NONE"
-    disaster_label = "NONE"
+    # occurring_anomaly = "NONE"
+    # predicted_anomaly = "NONE"
+    # disaster_label = "NONE"
     
-    # Evaluate Disaster Conditions
-    if scenario == "DISASTER":
-        disaster_label = "DISASTER_BLIZZARD_EMERGENCY"
-    elif CURRENT_FUEL < 2000.0:
-        disaster_label = "DISASTER_FUEL_EXHAUSTION_CRITICAL"
+    # # Evaluate Disaster Conditions
+    # if scenario == "DISASTER":
+    #     disaster_label = "DISASTER_BLIZZARD_EMERGENCY"
+    # elif CURRENT_FUEL < 2000.0:
+    #     disaster_label = "DISASTER_FUEL_EXHAUSTION_CRITICAL"
         
     # Evaluate Occurring Anomalies
-    if scenario == "ANOMALY" or generator_load > 90.0:
-        occurring_anomaly = "ANOMALY_GENERATOR_OVERLOAD"
-    elif battery_level < 25.0:
-        occurring_anomaly = "ANOMALY_BATTERY_CRITICAL_DEPLETION"
+    # if scenario == "ANOMALY" or generator_load > 90.0:
+    #     occurring_anomaly = "ANOMALY_GENERATOR_OVERLOAD"
+    # elif battery_level < 25.0:
+    #     occurring_anomaly = "ANOMALY_BATTERY_CRITICAL_DEPLETION"
         
-    # Evaluate Predictive Risk Trends
-    hours_of_fuel_remaining = CURRENT_FUEL / max(fuel_burn_rate_lph, 0.1)
-    if hours_of_fuel_remaining < 48.0:
-        predicted_anomaly = "PREDICTED_FUEL_DEPLETION_48H"
-    elif temp < -30.0 and battery_level < 40.0:
-        predicted_anomaly = "PREDICTED_HEATING_FAILURE_RISK"
+    # # Evaluate Predictive Risk Trends
+    # hours_of_fuel_remaining = CURRENT_FUEL / max(fuel_burn_rate_lph, 0.1)
+    # if hours_of_fuel_remaining < 48.0:
+    #     predicted_anomaly = "PREDICTED_FUEL_DEPLETION_48H"
+    # elif temp < -30.0 and battery_level < 40.0:
+    #     predicted_anomaly = "PREDICTED_HEATING_FAILURE_RISK"
 
     # --- I. ASSEMBLE DATAFRAME ROW ---
     record = {
@@ -128,26 +129,27 @@ def generate_station_reading(station_id="MAITRI"):
         'station_id': station_id,
         
         # Weather Fields
-        'temperature_celsius': round(temp, 2),
-        'wind_speed_knots': round(wind, 2),
-        'pressure_hpa': round(pressure, 2),
-        'humidity_percent': round(humidity, 2),
+        'Temperature': round(temp, 2),
+        'Wind_Speed': round(wind, 2),
+        'Pressure': round(pressure, 2),
+        'Humidity': round(humidity, 2),
         
         # Power & Energy Fields
-        'generator_load_percent': round(generator_load, 2),
-        'energy_consumed_kwh': round(energy_consumed_kwh, 2),
-        'battery_level_percent': round(battery_level, 2),
+        'Solar_Radiation':round(solar_kw,2),
+        'Generator_Load': round(generator_load, 2),
+        'Energy_consumption': round(energy_consumed_kwh, 2),
+        'Battery_Level': round(battery_level, 2),
         
         # Fuel & Inventory Fields
-        'fuel_level_liters': round(CURRENT_FUEL, 2),
-        'fuel_burn_rate_lph': round(fuel_burn_rate_lph, 2),
-        'food_inventory_kg': round(CURRENT_FOOD, 2),
-        'station_occupancy': occupancy,
+        'Fuel_Level': round(CURRENT_FUEL, 2),
+        'Fuel_Burn_Rate': round(fuel_burn_rate_lph, 2),
+        'Food_Inventory': round(CURRENT_FOOD, 2),
+        'Occupancy': occupancy,
         
         # Machine Learning Target Labels
-        'occurring_anomaly': occurring_anomaly,
-        'predicted_anomaly': predicted_anomaly,
-        'disaster_label': disaster_label
+        # 'occurring_anomaly': occurring_anomaly,
+        # 'predicted_anomaly': predicted_anomaly,
+        # 'disaster_label': disaster_label
     }
     
     return pd.DataFrame([record])
@@ -174,7 +176,7 @@ if __name__ == "__main__":
             print("-" * 80)
             
             # 3. Export to local CSV backup
-            telemetry_df.to_csv("hourly_antarctic_telemetry.csv", mode='a', header=not pd.io.common.file_exists("hourly_antarctic_telemetry.csv"), index=False)
+            telemetry_df.to_csv("Hourly_antarctic_telemetry.csv", mode='a', header=not pd.io.common.file_exists("hourly_antarctic_telemetry.csv"), index=False)
             
             # 4. Push to database
             try:
