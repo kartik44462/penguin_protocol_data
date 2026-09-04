@@ -1,44 +1,83 @@
-# ============================================================
-# ANTARCTICA DIGITAL TWIN - RESOURCE & RISK MODEL
-# ============================================================
-
 import os
 import pandas as pd
 import numpy as np
 
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor, IsolationForest
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+import mysql.connector
+
 
 # ============================================================
-# 1. LOAD DATA
+# 1. FILE PATHS
 # ============================================================
 
-# Automatically find the CSV in the same folder as this Python file.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DATA_FILE = os.path.join(
+# THIS IS THE ONLY INPUT DATASET
+INPUT_FILE = os.path.join(
     BASE_DIR,
     "Hourly_antarctic_telemetry.csv"
 )
 
-data = pd.read_csv(DATA_FILE)
-
-print("Dataset loaded successfully!")
-print(data.head())
-
-print("\nColumns:")
-print(data.columns.tolist())
+# THIS IS ONLY AN OUTPUT FILE
+OUTPUT_FILE = os.path.join(
+    BASE_DIR,
+    "Antarctic Digital Twin Prediction.csv"
+)
 
 
 # ============================================================
-# 2. CLEAN DATA
+# 2. LOAD DATA
 # ============================================================
 
-# Convert required numerical columns to numbers.
-# Invalid values become NaN.
+print("=" * 60)
+print("ANTARCTICA DIGITAL TWIN - DATA LOADING")
+print("=" * 60)
 
+try:
+    df = pd.read_csv(INPUT_FILE)
+    print("\nDataset loaded successfully!")
+    print(f"Input file: {INPUT_FILE}")
+except FileNotFoundError:
+    print("\nERROR: Hourly_antarctic_telemetry.csv was not found.")
+    print("Make sure it is in the same folder as sihaiml.py")
+    exit()
+
+
+print("\nFirst 5 rows:")
+print(df.head())
+
+print("\nDataset columns:")
+print(df.columns.tolist())
+
+
+# ============================================================
+# 3. CLEAN DATA
+# ============================================================
+
+print("\n" + "=" * 60)
+print("DATA CLEANING")
+print("=" * 60)
+
+# Remove completely empty rows
+df = df.dropna(how="all")
+
+# Remove rows where essential ML values are missing
+required_columns = [
+    "temperature_celsius",
+    "wind_speed_knots",
+    "generator_load_percent",
+    "energy_consumed_kwh",
+    "battery_level_percent",
+    "fuel_level_liters",
+    "station_occupancy"
+]
+
+df = df.dropna(subset=required_columns)
+
+# Convert numerical columns to numeric
 numeric_columns = [
     "temperature_celsius",
     "wind_speed_knots",
@@ -54,1307 +93,569 @@ numeric_columns = [
 ]
 
 for column in numeric_columns:
+    df[column] = pd.to_numeric(df[column], errors="coerce")
 
-    data[column] = pd.to_numeric(
-        data[column],
-        errors="coerce"
-    )
+# Remove rows that became invalid
+df = df.dropna(subset=required_columns)
 
-
-# Remove rows where the energy target is missing.
-
-data = data.dropna(
-    subset=["energy_consumed_kwh"]
-).reset_index(drop=True)
-
-
-print("\nCleaned dataset:")
-print(data.shape)
+print("Cleaned dataset successfully!")
+print(f"Number of records: {len(df)}")
 
 
 # ============================================================
-# 3. PREPARE DATA FOR EXISTING ML MODEL
+# 4. PREPARE FEATURES
 # ============================================================
 
-# Your original ML model expects these names.
-# We map the Antarctica dataset to those names.
+print("\n" + "=" * 60)
+print("PREPARING ML FEATURES")
+print("=" * 60)
 
-data["Temperature"] = data["temperature_celsius"]
+"""
+Your actual CSV does NOT contain Solar_Radiation.
 
-data["Wind_Speed"] = data["wind_speed_knots"]
+Therefore, we do not pretend that the source dataset contains it.
+For compatibility with the existing model structure, we create
+a Solar_Radiation feature with value 0.
 
-data["Occupancy"] = data["station_occupancy"]
+Later, if you obtain actual solar radiation data, replace this.
+"""
 
-data["Battery_Level"] = data["battery_level_percent"]
+model_df = pd.DataFrame({
+    "Temperature": df["temperature_celsius"],
+    "Wind_Speed": df["wind_speed_knots"],
+    "Solar_Radiation": 0,
+    "Occupancy": df["station_occupancy"],
+    "Battery_Level": df["battery_level_percent"],
+    "Generator_Load": df["generator_load_percent"],
+    "Fuel_Level": df["fuel_level_liters"]
+})
 
-data["Generator_Load"] = data["generator_load_percent"]
-
-data["Fuel_Level"] = data["fuel_level_liters"]
-
-
-# Your Antarctica dataset does not contain solar radiation.
-# Keep the existing model structure unchanged.
-
-data["Solar_Radiation"] = 0
-
-
-# Energy target
-
-data["Energy_Consumption"] = data["energy_consumed_kwh"]
-
-
-# Remove any rows with missing model values.
-
-model_columns = [
-    "Temperature",
-    "Wind_Speed",
-    "Solar_Radiation",
-    "Occupancy",
-    "Battery_Level",
-    "Generator_Load",
-    "Fuel_Level",
-    "Energy_Consumption"
-]
-
-data = data.dropna(
-    subset=model_columns
-).reset_index(drop=True)
-
-
-# ============================================================
-# 4. MODEL FEATURES
-# ============================================================
+target = df["energy_consumed_kwh"]
 
 features = [
-
     "Temperature",
-
     "Wind_Speed",
-
     "Solar_Radiation",
-
     "Occupancy",
-
     "Battery_Level",
-
     "Generator_Load",
-
     "Fuel_Level"
-
 ]
 
-X = data[features]
+print("\nFeatures used:")
+print(features)
 
-y = data["energy_consumed_kwh"]
+print("\nTarget:")
+print("Energy_Consumption")
 
 
 # ============================================================
-# 5. TRAIN ENERGY MODEL
+# 5. TRAIN / TEST SPLIT
 # ============================================================
 
 X_train, X_test, y_train, y_test = train_test_split(
-
-    X,
-
-    y,
-
-    test_size=0.2,
-
+    model_df,
+    target,
+    test_size=0.20,
     random_state=42
-
 )
 
+
+# ============================================================
+# 6. RANDOM FOREST ENERGY MODEL
+# ============================================================
+
+print("\n" + "=" * 60)
+print("ENERGY PREDICTION MODEL")
+print("=" * 60)
 
 energy_model = RandomForestRegressor(
-
     n_estimators=100,
-
     random_state=42
-
 )
 
+energy_model.fit(X_train, y_train)
 
-energy_model.fit(
-
-    X_train,
-
-    y_train
-
-)
+y_pred = energy_model.predict(X_test)
 
 
 # ============================================================
-# 6. ENERGY MODEL EVALUATION
+# 7. MODEL PERFORMANCE
 # ============================================================
 
-y_pred = energy_model.predict(
-    X_test
-)
+mae = mean_absolute_error(y_test, y_pred)
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+r2 = r2_score(y_test, y_pred)
 
-
-mae = mean_absolute_error(
-
-    y_test,
-
-    y_pred
-
-)
-
-
-mse = mean_squared_error(
-
-    y_test,
-
-    y_pred
-
-)
-
-
-r2 = r2_score(
-
-    y_test,
-
-    y_pred
-
-)
-
-
-print("\n==============================")
-
-print("ENERGY MODEL PERFORMANCE")
-
-print("==============================")
-
-
-print(
-
-    "MAE:",
-
-    round(mae, 2)
-
-)
-
-
-print(
-
-    "MSE:",
-
-    round(mse, 2)
-
-)
-
-
-print(
-
-    "R2 Score:",
-
-    round(r2, 2)
-
-)
+print("\nEnergy Model Performance")
+print("-" * 40)
+print(f"MAE  : {mae:.4f}")
+print(f"RMSE : {rmse:.4f}")
+print(f"R²   : {r2:.4f}")
 
 
 # ============================================================
-# 7. FEATURE IMPORTANCE
+# 8. FEATURE IMPORTANCE
 # ============================================================
 
-importance = pd.DataFrame({
-
-    "Feature": features,
-
-    "Importance": energy_model.feature_importances_
-
-})
-
-
-importance = importance.sort_values(
-
-    by="Importance",
-
-    ascending=False
-
-)
-
-
-print("\n==============================")
-
+print("\n" + "=" * 60)
 print("FEATURE IMPORTANCE")
+print("=" * 60)
 
-print("==============================")
-
-
-print(
-
-    importance.to_string(index=False)
-
-)
-
-
-# ============================================================
-# 8. CURRENT ANTARCTICA STATION CONDITIONS
-# ============================================================
-
-current_station = pd.DataFrame({
-
-    "Temperature": [-25],
-
-    "Wind_Speed": [30],
-
-    "Solar_Radiation": [150],
-
-    "Occupancy": [25],
-
-    "Battery_Level": [65],
-
-    "Generator_Load": [60],
-
-    "Fuel_Level": [500]
-
+importance_df = pd.DataFrame({
+    "Feature": features,
+    "Importance": energy_model.feature_importances_
 })
 
-
-# ============================================================
-# 9. PREDICT ENERGY CONSUMPTION
-# ============================================================
-
-predicted_energy = energy_model.predict(
-
-    current_station[features]
-
-)[0]
-
-
-print("\n==============================")
-
-print("CURRENT STATION PREDICTION")
-
-print("==============================")
-
-
-print(
-
-    "Predicted Energy Consumption:",
-
-    round(predicted_energy, 2),
-
-    "kWh"
-
+importance_df = importance_df.sort_values(
+    by="Importance",
+    ascending=False
 )
+
+print(importance_df.to_string(index=False))
 
 
 # ============================================================
-# 10. REMAINING ENERGY
+# 9. PREDICT ENERGY FOR ALL DATA
 # ============================================================
 
-battery_capacity = 1000  # kWh
-
-
-battery_percentage = current_station[
-
-    "Battery_Level"
-
-].iloc[0]
-
-
-energy_available = (
-
-    battery_percentage / 100
-
-) * battery_capacity
-
-
-solar_generation = (
-
-    current_station["Solar_Radiation"].iloc[0]
-
-)
-
-
-total_energy_available = (
-
-    energy_available +
-
-    solar_generation
-
-)
-
-
-energy_left = (
-
-    total_energy_available -
-
-    predicted_energy
-
-)
-
-
-# Prevent negative displayed energy.
-
-energy_left = max(
-
-    0,
-
-    energy_left
-
-)
-
-
-print("\n==============================")
-
-print("ENERGY STATUS")
-
-print("==============================")
-
-
-print(
-
-    "Battery Energy Available:",
-
-    round(energy_available, 2),
-
-    "kWh"
-
-)
-
-
-print(
-
-    "Solar Energy Generated:",
-
-    solar_generation,
-
-    "kWh"
-
-)
-
-
-print(
-
-    "Predicted Energy Consumption:",
-
-    round(predicted_energy, 2),
-
-    "kWh"
-
-)
-
-
-print(
-
-    "Estimated Energy Left:",
-
-    round(energy_left, 2),
-
-    "kWh"
-
-)
+df["predicted_energy"] = energy_model.predict(model_df)
 
 
 # ============================================================
-# 11. ENERGY ENDURANCE
+# 10. ISOLATION FOREST ANOMALY DETECTION
 # ============================================================
 
-if predicted_energy > 0:
-
-    days_of_energy = (
-
-        total_energy_available /
-
-        predicted_energy
-
-    )
-
-else:
-
-    days_of_energy = float("inf")
-
-
-print(
-
-    "Estimated Energy Endurance:",
-
-    round(days_of_energy, 2),
-
-    "days"
-
-)
-
-
-# ============================================================
-# 12. REMAINING FUEL
-# ============================================================
-
-current_fuel = current_station[
-
-    "Fuel_Level"
-
-].iloc[0]
-
-
-generator_fuel_rate = 70  # litres/day
-
-
-fuel_days_remaining = (
-
-    current_fuel /
-
-    generator_fuel_rate
-
-)
-
-
-print("\n==============================")
-
-print("FUEL STATUS")
-
-print("==============================")
-
-
-print(
-
-    "Remaining Fuel:",
-
-    current_fuel,
-
-    "litres"
-
-)
-
-
-print(
-
-    "Daily Fuel Consumption:",
-
-    generator_fuel_rate,
-
-    "litres/day"
-
-)
-
-
-print(
-
-    "Estimated Fuel Endurance:",
-
-    round(fuel_days_remaining, 2),
-
-    "days"
-
-)
-
-
-# ============================================================
-# 13. FUEL ALERT
-# ============================================================
-
-if fuel_days_remaining < 3:
-
-    fuel_status = "CRITICAL"
-
-elif fuel_days_remaining < 7:
-
-    fuel_status = "WARNING"
-
-else:
-
-    fuel_status = "NORMAL"
-
-
-print(
-
-    "Fuel Status:",
-
-    fuel_status
-
-)
-
-
-# ============================================================
-# 14. ENERGY ALERT
-# ============================================================
-
-if days_of_energy < 2:
-
-    energy_status = "CRITICAL"
-
-elif days_of_energy < 5:
-
-    energy_status = "WARNING"
-
-else:
-
-    energy_status = "NORMAL"
-
-
-print(
-
-    "Energy Status:",
-
-    energy_status
-
-)
-
-
-# ============================================================
-# 15. ANOMALY DETECTION
-# ============================================================
-
-anomaly_features = [
-
-    "Temperature",
-
-    "Wind_Speed",
-
-    "Solar_Radiation",
-
-    "Occupancy",
-
-    "Battery_Level",
-
-    "Generator_Load",
-
-    "Fuel_Level",
-
-    "Energy_Consumption"
-
-]
-
+print("\n" + "=" * 60)
+print("ANOMALY DETECTION")
+print("=" * 60)
 
 anomaly_model = IsolationForest(
-
     contamination=0.10,
-
     random_state=42
-
 )
 
+anomaly_model.fit(model_df)
 
-anomaly_model.fit(
+df["anomaly_prediction"] = anomaly_model.predict(model_df)
 
-    data[anomaly_features]
+df["anomaly_status"] = np.where(
+    df["anomaly_prediction"] == -1,
+    "ANOMALY",
+    "NORMAL"
+)
 
+print(
+    f"Anomalies detected: "
+    f"{(df['anomaly_status'] == 'ANOMALY').sum()}"
 )
 
 
 # ============================================================
-# 16. CURRENT STATION ANOMALY CHECK
+# 11. CURRENT STATION CONDITIONS
 # ============================================================
 
-current_energy = predicted_energy
+print("\n" + "=" * 60)
+print("CURRENT STATION PREDICTION")
+print("=" * 60)
 
+current_station = pd.DataFrame({
+    "Temperature": [-25],
+    "Wind_Speed": [30],
+    "Solar_Radiation": [150],
+    "Occupancy": [25],
+    "Battery_Level": [65],
+    "Generator_Load": [60],
+    "Fuel_Level": [500]
+})
 
-current_anomaly_data = current_station.copy()
-
-
-current_anomaly_data[
-
-    "Energy_Consumption"
-
-] = current_energy
-
-
-anomaly_result = anomaly_model.predict(
-
-    current_anomaly_data[
-
-        anomaly_features
-
-    ]
-
+current_energy_prediction = energy_model.predict(
+    current_station
 )[0]
 
-
-print("\n==============================")
-
-print("ANOMALY DETECTION")
-
-print("==============================")
-
-
-if anomaly_result == -1:
-
-    print("⚠️ ANOMALY DETECTED")
-
-    anomaly_status = "ANOMALY"
-
-else:
-
-    print("✅ Station operating normally")
-
-    anomaly_status = "NORMAL"
+print(f"\nPredicted Energy Consumption: "
+      f"{current_energy_prediction:.2f} kWh")
 
 
 # ============================================================
-# 17. RISK SCORE
+# 12. ENERGY STATUS
+# ============================================================
+
+battery_capacity = 1000
+
+current_battery = 65 / 100 * battery_capacity
+
+if current_energy_prediction > current_battery:
+    energy_status = "CRITICAL"
+elif current_energy_prediction > current_battery * 0.7:
+    energy_status = "WARNING"
+else:
+    energy_status = "NORMAL"
+
+print("\nEnergy Status:", energy_status)
+
+
+# ============================================================
+# 13. ENERGY ENDURANCE
+# ============================================================
+
+if current_energy_prediction > 0:
+    energy_endurance = current_battery / current_energy_prediction
+else:
+    energy_endurance = 0
+
+print(
+    f"Energy Endurance: "
+    f"{energy_endurance:.2f} days"
+)
+
+
+# ============================================================
+# 14. FUEL STATUS
+# ============================================================
+
+current_fuel = 500
+fuel_consumption_per_day = 70
+
+fuel_endurance = (
+    current_fuel / fuel_consumption_per_day
+)
+
+if fuel_endurance < 3:
+    fuel_status = "CRITICAL"
+elif fuel_endurance < 7:
+    fuel_status = "WARNING"
+else:
+    fuel_status = "NORMAL"
+
+print("\nFuel Status:", fuel_status)
+
+print(
+    f"Fuel Remaining: "
+    f"{current_fuel:.2f} litres"
+)
+
+print(
+    f"Fuel Endurance: "
+    f"{fuel_endurance:.2f} days"
+)
+
+
+# ============================================================
+# 15. FUEL ALERT
+# ============================================================
+
+if fuel_endurance < 7:
+    fuel_alert = "FUEL SUPPLY REQUIRED"
+else:
+    fuel_alert = "FUEL LEVEL SUFFICIENT"
+
+print("\nFuel Alert:", fuel_alert)
+
+
+# ============================================================
+# 16. ENERGY ALERT
+# ============================================================
+
+if energy_endurance < 5:
+    energy_alert = "ENERGY RESERVE LOW"
+else:
+    energy_alert = "ENERGY LEVEL SUFFICIENT"
+
+print("Energy Alert:", energy_alert)
+
+
+# ============================================================
+# 17. CURRENT ANOMALY
+# ============================================================
+
+current_anomaly_result = anomaly_model.predict(
+    current_station
+)[0]
+
+if current_anomaly_result == -1:
+    current_anomaly_status = "ANOMALY"
+else:
+    current_anomaly_status = "NORMAL"
+
+print("\nCurrent Anomaly Status:", current_anomaly_status)
+
+
+# ============================================================
+# 18. STATION RISK SCORE
 # ============================================================
 
 risk_score = 0
 
-
-if fuel_days_remaining < 7:
-
+if fuel_endurance < 7:
     risk_score += 30
 
-
-if days_of_energy < 5:
-
+if energy_endurance < 5:
     risk_score += 30
 
-
-if anomaly_status == "ANOMALY":
-
+if current_anomaly_status == "ANOMALY":
     risk_score += 40
 
-
-risk_score = min(
-
-    risk_score,
-
-    100
-
-)
-
-
-print("\n==============================")
-
-print("STATION RISK")
-
-print("==============================")
-
-
-print(
-
-    "Risk Score:",
-
-    risk_score,
-
-    "/ 100"
-
-)
-
+risk_score = min(risk_score, 100)
 
 if risk_score >= 70:
-
-    print("🔴 HIGH RISK")
-
+    risk_status = "HIGH RISK"
 elif risk_score >= 40:
-
-    print("🟠 MEDIUM RISK")
-
+    risk_status = "MEDIUM RISK"
 else:
+    risk_status = "LOW RISK"
 
-    print("🟢 LOW RISK")
+print("\n" + "=" * 60)
+print("STATION RISK")
+print("=" * 60)
+
+print(f"Risk Score: {risk_score} / 100")
+print(f"Risk Status: {risk_status}")
 
 
 # ============================================================
-# 18. NEXT VISIT RESOURCE RECOMMENDATION
+# 19. NEXT ANTARCTICA VISIT PLAN
 # ============================================================
 
 planning_days = 30
+reserve = 0.20
 
-
-fuel_required = (
-
-    generator_fuel_rate *
-
-    planning_days
-
+required_fuel = (
+    planning_days *
+    fuel_consumption_per_day *
+    (1 + reserve)
 )
 
-
-fuel_reserve = (
-
-    fuel_required * 0.20
-
-)
-
-
-total_fuel_required = (
-
-    fuel_required +
-
-    fuel_reserve
-
-)
-
-
-fuel_to_bring = max(
-
+additional_fuel = max(
     0,
-
-    total_fuel_required -
-
-    current_fuel
-
+    required_fuel - current_fuel
 )
 
-
-print("\n==============================")
-
+print("\n" + "=" * 60)
 print("NEXT ANTARCTICA VISIT PLAN")
-
-print("==============================")
-
+print("=" * 60)
 
 print(
+    f"Planning Period: "
+    f"{planning_days} days"
+)
 
-    "Recommended Fuel:",
+print(
+    f"Recommended Fuel for Next Visit: "
+    f"{required_fuel:.2f} litres"
+)
 
-    round(fuel_to_bring, 2),
-
-    "litres"
-
+print(
+    f"Additional Fuel Required: "
+    f"{additional_fuel:.2f} litres"
 )
 
 
 # ============================================================
-# 19. RESOURCE RECOMMENDATION
+# 20. ENERGY RECOMMENDATION
 # ============================================================
 
 if energy_status == "CRITICAL":
-
     energy_recommendation = (
-
-        "Additional battery capacity"
-
+        "Immediately reduce non-essential energy consumption."
     )
-
 elif energy_status == "WARNING":
-
     energy_recommendation = (
-
-        "Inspect battery and solar system"
-
+        "Monitor battery usage and reduce unnecessary loads."
     )
-
 else:
-
     energy_recommendation = (
-
-        "No immediate energy action"
-
+        "Energy consumption is within acceptable limits."
     )
 
-
-print(
-
-    "Energy Recommendation:",
-
-    energy_recommendation
-
-)
+print("\nEnergy Recommendation:")
+print(energy_recommendation)
 
 
 # ============================================================
-# 20. MAINTENANCE RECOMMENDATION
+# 21. MAINTENANCE RECOMMENDATION
 # ============================================================
 
-if anomaly_status == "ANOMALY":
-
+if current_anomaly_status == "ANOMALY":
     maintenance_recommendation = (
-
-        "Generator/equipment inspection"
-
+        "Immediate equipment inspection recommended."
     )
-
+elif risk_score >= 40:
+    maintenance_recommendation = (
+        "Schedule preventive maintenance before next visit."
+    )
 else:
-
     maintenance_recommendation = (
-
-        "Routine inspection"
-
+        "Continue routine preventive maintenance."
     )
 
-
-print(
-
-    "Maintenance Recommendation:",
-
-    maintenance_recommendation
-
-)
+print("\nMaintenance Recommendation:")
+print(maintenance_recommendation)
 
 
 # ============================================================
-# 21. FINAL DIGITAL TWIN REPORT
+# 22. ADD CALCULATED VALUES TO DATASET
+# ============================================================
+
+df["energy_remaining_kwh"] = current_battery
+df["energy_endurance_days"] = energy_endurance
+df["fuel_endurance_days"] = fuel_endurance
+df["risk_score"] = risk_score
+df["recommended_fuel_litres"] = required_fuel
+df["energy_status"] = energy_status
+df["fuel_status"] = fuel_status
+
+
+# ============================================================
+# 23. FINAL DIGITAL TWIN REPORT
 # ============================================================
 
 print("\n")
+print("=" * 60)
+print("       ANTARCTICA DIGITAL TWIN REPORT")
+print("=" * 60)
 
-print("==========================================")
-
-print("      ANTARCTICA DIGITAL TWIN REPORT")
-
-print("==========================================")
-
+print(f"Station: MAITRI")
 
 print(
-
-    "Predicted Energy:",
-
-    round(predicted_energy, 2),
-
-    "kWh"
-
+    f"Predicted Energy Consumption: "
+    f"{current_energy_prediction:.2f} kWh"
 )
-
 
 print(
-
-    "Energy Remaining:",
-
-    round(energy_left, 2),
-
-    "kWh"
-
+    f"Energy Endurance: "
+    f"{energy_endurance:.2f} days"
 )
-
 
 print(
-
-    "Energy Endurance:",
-
-    round(days_of_energy, 2),
-
-    "days"
-
+    f"Fuel Remaining: "
+    f"{current_fuel:.2f} litres"
 )
-
 
 print(
-
-    "Fuel Remaining:",
-
-    current_fuel,
-
-    "litres"
-
+    f"Fuel Endurance: "
+    f"{fuel_endurance:.2f} days"
 )
-
 
 print(
-
-    "Fuel Endurance:",
-
-    round(fuel_days_remaining, 2),
-
-    "days"
-
+    f"Anomaly Status: "
+    f"{current_anomaly_status}"
 )
-
 
 print(
-
-    "Anomaly Status:",
-
-    anomaly_status
-
+    f"Risk Score: "
+    f"{risk_score} / 100"
 )
-
 
 print(
-
-    "Risk Score:",
-
-    risk_score,
-
-    "/ 100"
-
+    f"Recommended Fuel for Next Visit: "
+    f"{required_fuel:.2f} litres"
 )
 
-
-print(
-
-    "Recommended Fuel for Next Visit:",
-
-    round(fuel_to_bring, 2),
-
-    "litres"
-
-)
-
-
-print(
-
-    "Energy Recommendation:",
-
-    energy_recommendation
-
-)
-
-
-print(
-
-    "Maintenance Recommendation:",
-
-    maintenance_recommendation
-
-)
-
-
-print("==========================================")
+print("=" * 60)
 
 
 # ============================================================
-# 22. SAVE OUTPUT CSV
+# 24. SAVE PREDICTIONS
 # ============================================================
 
-# Create a complete output record containing:
-# Original Antarctica data
-# + model-compatible columns
-# + prediction
-# + digital twin calculations
-
-
-output_data = data.copy()
-
-
-output_data["Predicted_Energy_Consumption"] = (
-
-    energy_model.predict(
-
-        output_data[features]
-
-    )
-
-)
-
-
-output_data["Anomaly_Status"] = np.where(
-
-    anomaly_model.predict(
-
-        output_data[anomaly_features]
-
-    ) == -1,
-
-    "ANOMALY",
-
-    "NORMAL"
-
-)
-
-
-output_data["Energy_Endurance_Days"] = (
-
-    output_data["battery_level_percent"] / 100
-
-    * battery_capacity
-
-    / output_data["Predicted_Energy_Consumption"].replace(
-
-        0,
-
-        np.nan
-
-    )
-
-)
-
-
-output_data["Fuel_Endurance_Days"] = (
-
-    output_data["fuel_level_liters"] /
-
-    generator_fuel_rate
-
-)
-
-
-output_data["Risk_Score"] = 0
-
-
-output_data.loc[
-
-    output_data["Fuel_Endurance_Days"] < 7,
-
-    "Risk_Score"
-
-] += 30
-
-
-output_data.loc[
-
-    output_data["Energy_Endurance_Days"] < 5,
-
-    "Risk_Score"
-
-] += 30
-
-
-output_data.loc[
-
-    output_data["Anomaly_Status"] == "ANOMALY",
-
-    "Risk_Score"
-
-] += 40
-
-
-output_data["Risk_Score"] = (
-
-    output_data["Risk_Score"].clip(
-
-        0,
-
-        100
-
-    )
-
-)
-
-
-output_data["Recommended_Fuel_Litres"] = (
-
-    np.maximum(
-
-        0,
-
-        total_fuel_required -
-
-        output_data["fuel_level_liters"]
-
-    )
-
-)
-
-
-output_data["Next_Visit_Required"] = np.where(
-
-    (output_data["Fuel_Endurance_Days"] < 3) |
-
-    (output_data["Energy_Endurance_Days"] < 2) |
-
-    (output_data["Risk_Score"] >= 70),
-
-    "YES",
-
-    "NO"
-
-)
-
-
-output_data["Resource_Recommendation"] = np.where(
-
-    output_data["Risk_Score"] >= 70,
-
-    "Fuel + Battery + Maintenance",
-
-    np.where(
-
-        output_data["Fuel_Endurance_Days"] < 7,
-
-        "Fuel Refill",
-
-        "No Immediate Resource Required"
-
-    )
-
-)
-
-
-# Save output inside the repository.
-
-output_file = os.path.join(
-
-    BASE_DIR,
-
-    "antarctica_digital_twin_predictions.csv"
-
-)
-
-
-output_data.to_csv(
-
-    output_file,
-
+df.to_csv(
+    OUTPUT_FILE,
     index=False
-
 )
 
-
-print(
-
-    "\n✅ Complete prediction file saved:"
-
-)
-
-print(output_file)
+print("\nPrediction file saved successfully!")
+print(f"Output: {OUTPUT_FILE}")
 
 
 # ============================================================
-# 23. SAVE CURRENT DIGITAL TWIN RESULT TO MYSQL
+# 25. MYSQL CONNECTION
 # ============================================================
 
-import mysql.connector
-
+print("\n" + "=" * 60)
+print("MYSQL DATABASE")
+print("=" * 60)
 
 try:
 
-    db = mysql.connector.connect(
-
+    connection = mysql.connector.connect(
         host="localhost",
-
         user="root",
-
         password="lavanya",
-
         database="antarctica"
-
     )
 
+    cursor = connection.cursor()
 
-    cursor = db.cursor()
+    print("Connected to MySQL!")
 
-
-    print("\nConnected to MySQL!")
-
-
-    sql = """
-
+    insert_query = """
     INSERT INTO predictions (
-
         timestamp,
-
         temperature,
-
         wind_speed,
-
         solar_radiation,
-
         occupancy,
-
         battery_level,
-
         generator_load,
-
         fuel_level,
-
         predicted_energy,
-
         energy_remaining,
-
         energy_endurance,
-
         fuel_endurance,
-
         anomaly_status,
-
         risk_score,
-
         recommended_fuel,
-
         energy_status,
-
         fuel_status
-
     )
-
     VALUES (
-
-        NOW(), %s, %s, %s, %s, %s, %s, %s, %s,
-
+        %s, %s, %s, %s, %s, %s, %s, %s, %s,
         %s, %s, %s, %s, %s, %s, %s, %s
-
     )
-
     """
 
+    current_timestamp = pd.Timestamp.now()
 
     values = (
-
-        float(
-
-            current_station["Temperature"].iloc[0]
-
-        ),
-
-        float(
-
-            current_station["Wind_Speed"].iloc[0]
-
-        ),
-
-        float(
-
-            current_station["Solar_Radiation"].iloc[0]
-
-        ),
-
-        int(
-
-            current_station["Occupancy"].iloc[0]
-
-        ),
-
-        float(
-
-            current_station["Battery_Level"].iloc[0]
-
-        ),
-
-        float(
-
-            current_station["Generator_Load"].iloc[0]
-
-        ),
-
-        float(
-
-            current_station["Fuel_Level"].iloc[0]
-
-        ),
-
-        float(predicted_energy),
-
-        float(energy_left),
-
-        float(days_of_energy),
-
-        float(fuel_days_remaining),
-
-        anomaly_status,
-
+        current_timestamp,
+        -25,
+        30,
+        150,
+        25,
+        65,
+        60,
+        500,
+        float(current_energy_prediction),
+        float(current_battery),
+        float(energy_endurance),
+        float(fuel_endurance),
+        current_anomaly_status,
         int(risk_score),
-
-        float(fuel_to_bring),
-
+        float(required_fuel),
         energy_status,
-
         fuel_status
-
     )
 
+    cursor.execute(insert_query, values)
 
-    cursor.execute(
+    connection.commit()
 
-        sql,
-
-        values
-
-    )
-
-
-    db.commit()
-
-
-    print(
-
-        "✅ Digital Twin prediction saved to MySQL!"
-
-    )
-
+    print("Prediction successfully saved to MySQL!")
 
     cursor.close()
-
-    db.close()
-
+    connection.close()
 
 except mysql.connector.Error as error:
 
-    print(
+    print("\nMySQL Error:")
+    print(error)
 
-        "⚠️ MySQL Error:",
 
-        error
+# ============================================================
+# 26. COMPLETED
+# ============================================================
 
-    )
+print("\n" + "=" * 60)
+print("DIGITAL TWIN PROCESS COMPLETED")
+print("=" * 60)
