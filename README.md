@@ -1,4 +1,4 @@
-﻿# penguin_protocol_data
+﻿# penguin protocol
 # ❄️ Antarctica Digital Twin
 
 ## AI/ML-Powered Digital Twin for Antarctic Research Stations
