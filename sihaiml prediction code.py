@@ -41,6 +41,10 @@ FUEL_RESERVE = 0.20
 # as the "current station condition" automatically.
 USE_DEMO_CURRENT_CONDITIONS = True
 
+# Select which station the current-condition prediction represents.
+# Valid values: MAITRI or BHARATI
+DEMO_STATION_ID = "MAITRI"
+
 DEMO_CURRENT_CONDITIONS = {
     "Temperature": -25.0,
     "Wind_Speed": 30.0,
@@ -151,8 +155,36 @@ if "timestamp" in df.columns:
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.sort_values("timestamp").reset_index(drop=True)
 
+# ------------------------------------------------------------
+# STATION IDENTIFICATION
+# ------------------------------------------------------------
+# station_id is now an actual ML feature, not just a database field.
+if "station_id" not in df.columns:
+    raise ValueError(
+        "station_id is required so the model can differentiate "
+        "MAITRI and BHARATI."
+    )
+
+df["station_id"] = (
+    df["station_id"]
+    .astype(str)
+    .str.strip()
+    .str.upper()
+)
+
+valid_stations = {"MAITRI", "BHARATI"}
+unknown_stations = sorted(set(df["station_id"]) - valid_stations)
+
+if unknown_stations:
+    raise ValueError(
+        f"Unknown station_id values found: {unknown_stations}. "
+        f"Use only: {sorted(valid_stations)}"
+    )
+
 print("Cleaned dataset successfully!")
 print(f"Valid records: {len(df)}")
+print("\nStation distribution:")
+print(df["station_id"].value_counts().to_string())
 
 
 # ============================================================
@@ -160,6 +192,13 @@ print(f"Valid records: {len(df)}")
 # ============================================================
 
 print_header("PREPARING ML FEATURES")
+
+# Encode station identity numerically for the Random Forest:
+# MAITRI = 0, BHARATI = 1
+df["Station_Code"] = df["station_id"].map({
+    "MAITRI": 0,
+    "BHARATI": 1,
+}).astype(int)
 
 model_df = pd.DataFrame({
     "Temperature": df["temperature_celsius"],
@@ -169,6 +208,7 @@ model_df = pd.DataFrame({
     "Battery_Level": df["battery_level_percent"],
     "Generator_Load": df["generator_load_percent"],
     "Fuel_Level": df["fuel_level_liters"],
+    "Station_Code": df["Station_Code"],
 })
 
 target = df["energy_consumed_kwh"]
@@ -248,6 +288,18 @@ importance_df = pd.DataFrame({
 
 print(importance_df.to_string(index=False))
 
+print("\nStation-aware model check:")
+for station in ["MAITRI", "BHARATI"]:
+    station_rows = int((df["station_id"] == station).sum())
+    print(f"  {station}: {station_rows} records")
+
+if not all((df["station_id"] == s).any() for s in ["MAITRI", "BHARATI"]):
+    print(
+        "\nWARNING: The dataset does not contain both MAITRI and BHARATI. "
+        "The model can accept both station codes, but it can only learn "
+        "station-specific behavior from stations represented in training data."
+    )
+
 
 # ============================================================
 # 8. PREDICT ENERGY FOR ALL DATA
@@ -317,10 +369,28 @@ print(f"Normal records   : {len(df) - anomaly_count}")
 print_header("CURRENT STATION PREDICTION")
 
 if USE_DEMO_CURRENT_CONDITIONS:
-    current_station = pd.DataFrame([DEMO_CURRENT_CONDITIONS])
-    current_source = "Demo/current operating conditions"
+    DEMO_STATION_ID = str(DEMO_STATION_ID).strip().upper()
+
+    if DEMO_STATION_ID not in {"MAITRI", "BHARATI"}:
+        raise ValueError(
+            "DEMO_STATION_ID must be either 'MAITRI' or 'BHARATI'."
+        )
+
+    current_station = pd.DataFrame([{
+        **DEMO_CURRENT_CONDITIONS,
+        "Station_Code": 0 if DEMO_STATION_ID == "MAITRI" else 1,
+    }])
+    current_station_id = DEMO_STATION_ID
+    current_source = (
+        f"Demo/current operating conditions for {current_station_id}"
+    )
 else:
-    latest = df.iloc[-1]
+    # Use the latest record from each station independently, then select
+    # the latest overall station record as the current station condition.
+    latest = df.dropna(subset=["timestamp"]).iloc[-1]
+
+    current_station_id = str(latest["station_id"]).upper()
+
     current_station = pd.DataFrame([{
         "Temperature": latest["temperature_celsius"],
         "Wind_Speed": latest["wind_speed_knots"],
@@ -329,9 +399,13 @@ else:
         "Battery_Level": latest["battery_level_percent"],
         "Generator_Load": latest["generator_load_percent"],
         "Fuel_Level": latest["fuel_level_liters"],
+        "Station_Code": int(latest["Station_Code"]),
     }])
-    current_source = "Latest record from training dataset"
+    current_source = (
+        f"Latest record from {current_station_id}"
+    )
 
+print(f"Current station: {current_station_id}")
 print(f"Current condition source: {current_source}")
 
 current_energy_prediction = float(
@@ -390,9 +464,21 @@ print("Energy Status:", energy_status)
 
 current_fuel = float(current_station["Fuel_Level"].iloc[0])
 
-# Use the dataset's historical median fuel burn rate instead of
-# hard-coding 70 litres/day.
-fuel_burn_rate_lph = float(df["fuel_burn_rate_lph"].median())
+# Use the selected station's historical median fuel burn rate.
+# This prevents MAITRI's fuel behavior from being mixed with BHARATI's.
+station_fuel_history = df[
+    df["station_id"] == current_station_id
+]["fuel_burn_rate_lph"]
+
+if station_fuel_history.dropna().empty:
+    # Fallback only if the selected station has no valid fuel-rate history.
+    fuel_burn_rate_lph = float(df["fuel_burn_rate_lph"].median())
+    fuel_rate_source = "All-station fallback"
+else:
+    fuel_burn_rate_lph = float(station_fuel_history.median())
+    fuel_rate_source = f"{current_station_id} historical median"
+
+print(f"Fuel-rate source: {fuel_rate_source}")
 
 if fuel_burn_rate_lph > 0:
     fuel_consumption_per_day = fuel_burn_rate_lph * 24
@@ -566,11 +652,7 @@ df["fuel_status"] = fuel_status
 
 print_header("ANTARCTICA DIGITAL TWIN REPORT")
 
-station_name = (
-    str(df["station_id"].iloc[-1])
-    if "station_id" in df.columns
-    else "MAITRI"
-)
+station_name = current_station_id
 
 print(f"Station: {station_name}")
 print(f"Predicted Energy / Interval: {current_energy_prediction:.2f} kWh")
@@ -598,6 +680,13 @@ df.to_csv(OUTPUT_FILE, index=False)
 
 print("\nPrediction file saved successfully!")
 print(f"Output: {OUTPUT_FILE}")
+
+print("\nStation-wise prediction summary:")
+station_summary = (
+    df.groupby("station_id")["predicted_energy_kwh"]
+    .agg(["count", "mean", "min", "max"])
+)
+print(station_summary.to_string())
 
 # ============================================================
 # 22. MYSQL DATABASE - UPLOAD ALL PREDICTIONS
