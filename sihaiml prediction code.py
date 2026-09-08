@@ -877,3 +877,400 @@ except Exception as error:
 # ============================================================
 
 print_header("DIGITAL TWIN PROCESS COMPLETED")
+
+# ============================================================
+# 24. REAL-TIME MAITRI + BHARATI DIGITAL TWIN STREAM
+# ============================================================
+
+import time
+from datetime import datetime, timedelta
+
+RUN_REALTIME = True
+
+# Every 5 real seconds, generate one new reading for both stations.
+REALTIME_INTERVAL_SECONDS = 5
+
+# Simulation speed:
+# 1 real tick = 60 simulated minutes.
+SIMULATED_MINUTES_PER_TICK = 60
+
+STATIONS = ["MAITRI", "BHARATI"]
+
+# These are SIMULATION starting values.
+# Replace generate_realtime_conditions() with actual sensor/API/MQTT
+# input later if real Antarctic sensor data becomes available.
+REALTIME_BASE_CONDITIONS = {
+    "MAITRI": {
+        "Temperature": -25.0,
+        "Wind_Speed": 30.0,
+        "Solar_Radiation": 150.0,
+        "Occupancy": 25.0,
+        "Battery_Level": 65.0,
+        "Generator_Load": 60.0,
+        "Fuel_Level": 500.0,
+    },
+    "BHARATI": {
+        "Temperature": -18.0,
+        "Wind_Speed": 25.0,
+        "Solar_Radiation": 180.0,
+        "Occupancy": 20.0,
+        "Battery_Level": 70.0,
+        "Generator_Load": 55.0,
+        "Fuel_Level": 550.0,
+    },
+}
+
+
+def generate_realtime_conditions(station_id, previous):
+    """Generate one simulated sensor reading for a station."""
+    values = previous.copy()
+
+    values["Temperature"] += np.random.normal(0, 0.4)
+    values["Wind_Speed"] = max(
+        0.0, values["Wind_Speed"] + np.random.normal(0, 2.0)
+    )
+    values["Solar_Radiation"] = max(
+        0.0, values["Solar_Radiation"] + np.random.normal(0, 15.0)
+    )
+    values["Occupancy"] = max(
+        0.0, values["Occupancy"] + np.random.normal(0, 0.5)
+    )
+    values["Battery_Level"] = np.clip(
+        values["Battery_Level"] + np.random.normal(0, 1.0),
+        0.0, 100.0
+    )
+    values["Generator_Load"] = np.clip(
+        values["Generator_Load"] + np.random.normal(0, 2.0),
+        0.0, 100.0
+    )
+    values["Fuel_Level"] = max(
+        0.0,
+        values["Fuel_Level"] - np.random.uniform(0.05, 0.25)
+    )
+
+    return values
+
+
+def build_realtime_features(station_id, conditions):
+    """Build exactly the feature columns expected by the ML models."""
+    return pd.DataFrame([{
+        "Temperature": conditions["Temperature"],
+        "Wind_Speed": conditions["Wind_Speed"],
+        "Solar_Radiation": conditions["Solar_Radiation"],
+        "Occupancy": conditions["Occupancy"],
+        "Battery_Level": conditions["Battery_Level"],
+        "Generator_Load": conditions["Generator_Load"],
+        "Fuel_Level": conditions["Fuel_Level"],
+        "Station_Code": 0 if station_id == "MAITRI" else 1,
+    }])
+
+
+def ensure_realtime_table(connection):
+    """Create a separate table for continuously changing station state."""
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS realtime_station_state (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            timestamp DATETIME NOT NULL,
+            station_id VARCHAR(20) NOT NULL,
+            temperature_celsius DOUBLE,
+            wind_speed_knots DOUBLE,
+            solar_radiation_wm2 DOUBLE,
+            station_occupancy DOUBLE,
+            battery_level_percent DOUBLE,
+            generator_load_percent DOUBLE,
+            fuel_level_liters DOUBLE,
+            predicted_energy_kwh DOUBLE,
+            anomaly_prediction INT,
+            anomaly_status VARCHAR(20),
+            energy_remaining_kwh DOUBLE,
+            energy_consumption_per_day_kwh DOUBLE,
+            energy_endurance_days DOUBLE,
+            fuel_consumption_per_day_litres DOUBLE,
+            fuel_endurance_days DOUBLE,
+            risk_score INT,
+            risk_status VARCHAR(30),
+            recommended_fuel_litres DOUBLE,
+            additional_fuel_required_litres DOUBLE,
+            energy_status VARCHAR(20),
+            fuel_status VARCHAR(20)
+        )
+    """)
+
+    connection.commit()
+    cursor.close()
+
+
+def insert_realtime_state(connection, state):
+    cursor = connection.cursor()
+
+    query = """
+        INSERT INTO realtime_station_state (
+            timestamp, station_id,
+            temperature_celsius, wind_speed_knots,
+            solar_radiation_wm2, station_occupancy,
+            battery_level_percent, generator_load_percent,
+            fuel_level_liters, predicted_energy_kwh,
+            anomaly_prediction, anomaly_status,
+            energy_remaining_kwh, energy_consumption_per_day_kwh,
+            energy_endurance_days, fuel_consumption_per_day_litres,
+            fuel_endurance_days, risk_score, risk_status,
+            recommended_fuel_litres, additional_fuel_required_litres,
+            energy_status, fuel_status
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s
+        )
+    """
+
+    cursor.execute(query, (
+        state["timestamp"],
+        state["station_id"],
+        state["temperature_celsius"],
+        state["wind_speed_knots"],
+        state["solar_radiation_wm2"],
+        state["station_occupancy"],
+        state["battery_level_percent"],
+        state["generator_load_percent"],
+        state["fuel_level_liters"],
+        state["predicted_energy_kwh"],
+        state["anomaly_prediction"],
+        state["anomaly_status"],
+        state["energy_remaining_kwh"],
+        state["energy_consumption_per_day_kwh"],
+        state["energy_endurance_days"],
+        state["fuel_consumption_per_day_litres"],
+        state["fuel_endurance_days"],
+        state["risk_score"],
+        state["risk_status"],
+        state["recommended_fuel_litres"],
+        state["additional_fuel_required_litres"],
+        state["energy_status"],
+        state["fuel_status"],
+    ))
+
+    connection.commit()
+    cursor.close()
+
+
+def calculate_realtime_state(station_id, conditions, simulated_timestamp):
+    """Run ML predictions and calculations for one station."""
+    features_now = build_realtime_features(station_id, conditions)
+
+    predicted_energy = float(
+        energy_model.predict(features_now)[0]
+    )
+
+    anomaly_result = int(
+        anomaly_model.predict(features_now)[0]
+    )
+
+    anomaly_status = (
+        "ANOMALY" if anomaly_result == -1 else "NORMAL"
+    )
+
+    battery_percent = float(conditions["Battery_Level"])
+    current_battery = (
+        battery_percent / 100.0
+    ) * BATTERY_CAPACITY_KWH
+
+    daily_energy = (
+        predicted_energy / interval_hours * 24
+        if interval_hours > 0 else 0.0
+    )
+
+    energy_endurance = (
+        current_battery / daily_energy
+        if daily_energy > 0 else float("inf")
+    )
+
+    if battery_percent <= 20:
+        energy_status = "CRITICAL"
+    elif battery_percent <= 40:
+        energy_status = "WARNING"
+    else:
+        energy_status = "NORMAL"
+
+    # Use this station's historical fuel-burn rate.
+    station_fuel = df[
+        df["station_id"] == station_id
+    ]["fuel_burn_rate_lph"].dropna()
+
+    if station_fuel.empty:
+        burn_rate = float(df["fuel_burn_rate_lph"].median())
+    else:
+        burn_rate = float(station_fuel.median())
+
+    current_fuel = float(conditions["Fuel_Level"])
+    fuel_per_day = burn_rate * 24 if burn_rate > 0 else 0.0
+
+    fuel_endurance = (
+        current_fuel / fuel_per_day
+        if fuel_per_day > 0 else float("inf")
+    )
+
+    if fuel_endurance < 3:
+        fuel_status = "CRITICAL"
+    elif fuel_endurance < 7:
+        fuel_status = "WARNING"
+    else:
+        fuel_status = "NORMAL"
+
+    risk_score = 0
+
+    if fuel_endurance < 7:
+        risk_score += 30
+
+    if energy_endurance < 5:
+        risk_score += 30
+
+    if anomaly_status == "ANOMALY":
+        risk_score += 40
+
+    risk_score = min(risk_score, 100)
+
+    if risk_score >= 70:
+        risk_status = "HIGH RISK"
+    elif risk_score >= 40:
+        risk_status = "MEDIUM RISK"
+    else:
+        risk_status = "LOW RISK"
+
+    required_fuel = (
+        PLANNING_DAYS
+        * fuel_per_day
+        * (1 + FUEL_RESERVE)
+    )
+
+    additional_fuel = max(
+        0.0,
+        required_fuel - current_fuel
+    )
+
+    return {
+        "timestamp": simulated_timestamp,
+        "station_id": station_id,
+        "temperature_celsius": float(conditions["Temperature"]),
+        "wind_speed_knots": float(conditions["Wind_Speed"]),
+        "solar_radiation_wm2": float(conditions["Solar_Radiation"]),
+        "station_occupancy": float(conditions["Occupancy"]),
+        "battery_level_percent": battery_percent,
+        "generator_load_percent": float(conditions["Generator_Load"]),
+        "fuel_level_liters": current_fuel,
+        "predicted_energy_kwh": predicted_energy,
+        "anomaly_prediction": anomaly_result,
+        "anomaly_status": anomaly_status,
+        "energy_remaining_kwh": current_battery,
+        "energy_consumption_per_day_kwh": daily_energy,
+        "energy_endurance_days": energy_endurance,
+        "fuel_consumption_per_day_litres": fuel_per_day,
+        "fuel_endurance_days": fuel_endurance,
+        "risk_score": risk_score,
+        "risk_status": risk_status,
+        "recommended_fuel_litres": required_fuel,
+        "additional_fuel_required_litres": additional_fuel,
+        "energy_status": energy_status,
+        "fuel_status": fuel_status,
+    }
+
+
+def run_realtime_pipeline():
+    """Continuously update both Maitri and Bharati."""
+    print_header("REAL-TIME MAITRI + BHARATI DIGITAL TWIN")
+
+    connection = None
+
+    try:
+        connection = mysql.connector.connect(
+            host=MYSQL_CONFIG["host"],
+            user=MYSQL_CONFIG["user"],
+            password=MYSQL_CONFIG["password"],
+            database=MYSQL_CONFIG["database"],
+        )
+
+        ensure_realtime_table(connection)
+
+        live_conditions = {
+            station: REALTIME_BASE_CONDITIONS[station].copy()
+            for station in STATIONS
+        }
+
+        if "timestamp" in df.columns and df["timestamp"].notna().any():
+            simulated_time = (
+                df["timestamp"].dropna().max().to_pydatetime()
+            )
+        else:
+            simulated_time = datetime.now()
+
+        print("\nREAL-TIME PIPELINE STARTED")
+        print(f"Update interval: {REALTIME_INTERVAL_SECONDS} seconds")
+        print(
+            f"Simulation speed: "
+            f"{SIMULATED_MINUTES_PER_TICK} simulated minutes/tick"
+        )
+        print("Stations: MAITRI + BHARATI")
+        print("Press Ctrl+C to stop.\n")
+
+        while True:
+            simulated_time += timedelta(
+                minutes=SIMULATED_MINUTES_PER_TICK
+            )
+
+            for station in STATIONS:
+
+                # Generate the next live reading.
+                live_conditions[station] = (
+                    generate_realtime_conditions(
+                        station,
+                        live_conditions[station]
+                    )
+                )
+
+                # Run station-specific ML prediction.
+                state = calculate_realtime_state(
+                    station,
+                    live_conditions[station],
+                    simulated_time
+                )
+
+                # Save live state to MySQL.
+                insert_realtime_state(connection, state)
+
+                print(
+                    f"[{state['timestamp']}] "
+                    f"{station:7s} | "
+                    f"Energy={state['predicted_energy_kwh']:.2f} kWh | "
+                    f"Battery={state['battery_level_percent']:.1f}% | "
+                    f"Fuel={state['fuel_level_liters']:.1f} L | "
+                    f"Anomaly={state['anomaly_status']} | "
+                    f"Risk={state['risk_score']}/100"
+                )
+
+            time.sleep(REALTIME_INTERVAL_SECONDS)
+
+    except KeyboardInterrupt:
+        print("\nReal-time pipeline stopped.")
+
+    except mysql.connector.Error as error:
+        print("\nREAL-TIME MYSQL ERROR:")
+        print(error)
+
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+                print("MySQL connection closed.")
+            except Exception:
+                pass
+
+
+if RUN_REALTIME:
+    run_realtime_pipeline()
+
+
+# ============================================================
+# 25. COMPLETED
+# ============================================================
